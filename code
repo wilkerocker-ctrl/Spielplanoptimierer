@@ -1,96 +1,19 @@
-from flask import Flask, request, render_template_string
-from itertools import combinations
+import streamlit as st
 import sqlite3
-
-app = Flask(__name__)
-
-SPIELER = [
-    "Eike Be", "Eike Br", "Marc", "Kai",
-    "Mirco", "Wilke", "Niko", "Meyer",
-    "Elton", "Süne", "Jannes", "Daniel"
-]
+from itertools import combinations
 
 DB = "historie.db"
 
-HTML = """
-<!doctype html>
-<html>
-<head>
-    <title>Spieltag Planer</title>
-    <style>
-        body{
-            font-family:Arial;
-            max-width:900px;
-            margin:auto;
-            padding:20px;
-        }
-        .spieler{
-            display:inline-block;
-            width:200px;
-            margin:4px;
-        }
-        .spiel{
-            padding:10px;
-            margin:10px 0;
-            background:#f0f0f0;
-            border-radius:8px;
-        }
-    </style>
-</head>
-<body>
+STANDARD_SPIELER = [
+    "Eike Be", "Eike Br", "Marc", "Kai",
+    "Mirco", "Wilke", "Meyer", "Elton",
+    "Daniel", "Süne", "Jannes", "Daniel"
+]
 
-<h1>2 gegen 2 Spieltag-Planer</h1>
 
-<form method="post">
-
-{% for s in spieler %}
-<div class="spieler">
-<label>
-<input type="checkbox" name="anw" value="{{s}}">
-{{s}}
-</label>
-</div>
-{% endfor %}
-
-<br><br>
-
-<button type="submit">
-Spieltag berechnen
-</button>
-
-</form>
-
-{% if spiele %}
-
-<h2>Spiele</h2>
-
-{% for spiel in spiele %}
-<div class="spiel">
-<b>{{loop.index}}.</b>
-{{spiel[0][0]}} + {{spiel[0][1]}}
-gegen
-{{spiel[1][0]}} + {{spiel[1][1]}}
-</div>
-{% endfor %}
-
-<h2>Übrig</h2>
-
-{% if uebrige %}
-<ul>
-{% for s in uebrige %}
-<li>{{s}}</li>
-{% endfor %}
-</ul>
-{% else %}
-<p>Keine</p>
-{% endif %}
-
-{% endif %}
-
-</body>
-</html>
-"""
-
+# -----------------------------------------
+# Datenbank
+# -----------------------------------------
 
 def init_db():
     conn = sqlite3.connect(DB)
@@ -139,36 +62,45 @@ def speichern(a, b, typ):
     conn = sqlite3.connect(DB)
     c = conn.cursor()
 
-    c.execute(
-        "INSERT OR IGNORE INTO paare(a,b,team,gegner) VALUES(?,?,0,0)",
-        (a, b)
-    )
+    c.execute("""
+    INSERT OR IGNORE INTO paare(a,b,team,gegner)
+    VALUES(?,?,0,0)
+    """, (a, b))
 
     if typ == "team":
-        c.execute(
-            "UPDATE paare SET team=team+1 WHERE a=? AND b=?",
-            (a, b)
-        )
+        c.execute("""
+        UPDATE paare
+        SET team = team + 1
+        WHERE a=? AND b=?
+        """, (a, b))
+
     else:
-        c.execute(
-            "UPDATE paare SET gegner=gegner+1 WHERE a=? AND b=?",
-            (a, b)
-        )
+        c.execute("""
+        UPDATE paare
+        SET gegner = gegner + 1
+        WHERE a=? AND b=?
+        """, (a, b))
 
     conn.commit()
     conn.close()
 
 
+# -----------------------------------------
+# Optimierung
+# -----------------------------------------
+
 def kosten(team1, team2):
 
     wert = 0
 
+    # Mitspieler möglichst vermeiden
     for p in combinations(team1, 2):
-        wert += hole_werte(*p)[0] * 10
+        wert += hole_werte(*p)[0] * 20
 
     for p in combinations(team2, 2):
-        wert += hole_werte(*p)[0] * 10
+        wert += hole_werte(*p)[0] * 20
 
+    # Gegner ebenfalls verteilen
     for a in team1:
         for b in team2:
             wert += hole_werte(a, b)[1]
@@ -184,7 +116,7 @@ def spieltag_berechnen(anwesend):
 
     while len(anwesend) >= 4:
 
-        beste_kosten = 999999
+        beste_kosten = 999999999
         beste_losung = None
 
         for vierer in combinations(anwesend, 4):
@@ -225,26 +157,63 @@ def spieltag_berechnen(anwesend):
     return spiele, anwesend
 
 
-@app.route("/", methods=["GET", "POST"])
-def start():
+# -----------------------------------------
+# Statistik
+# -----------------------------------------
 
-    spiele = None
-    uebrige = []
+def lade_statistik():
 
-    if request.method == "POST":
+    conn = sqlite3.connect(DB)
 
-        anwesend = request.form.getlist("anw")
+    daten = conn.execute("""
+    SELECT a,b,team,gegner
+    FROM paare
+    ORDER BY team DESC, gegner DESC
+    """).fetchall()
+
+    conn.close()
+
+    return daten
+
+
+# -----------------------------------------
+# UI
+# -----------------------------------------
+
+init_db()
+
+st.set_page_config(
+    page_title="Spieltag Planer",
+    layout="wide"
+)
+
+st.title("🏆 Spieltag Planer 2 gegen 2")
+
+st.subheader("Anwesende Spieler auswählen")
+
+anwesend = []
+
+cols = st.columns(3)
+
+for i, spieler in enumerate(STANDARD_SPIELER):
+
+    with cols[i % 3]:
+
+        if st.checkbox(spieler):
+            anwesend.append(spieler)
+
+st.divider()
+
+if st.button("Spieltag berechnen", type="primary"):
+
+    if len(anwesend) < 4:
+
+        st.error("Mindestens 4 Spieler erforderlich.")
+
+    else:
 
         spiele, uebrige = spieltag_berechnen(anwesend)
 
-    return render_template_string(
-        HTML,
-        spieler=SPIELER,
-        spiele=spiele,
-        uebrige=uebrige
-    )
+        st.success("Spieltag erstellt")
 
-
-if __name__ == "__main__":
-    init_db()
-    app.run(debug=True)
+     
