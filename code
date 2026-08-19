@@ -1,0 +1,250 @@
+from flask import Flask, request, render_template_string
+from itertools import combinations
+import sqlite3
+
+app = Flask(__name__)
+
+SPIELER = [
+    "Eike Be", "Eike Br", "Marc", "Kai",
+    "Mirco", "Wilke", "Niko", "Meyer",
+    "Elton", "Süne", "Jannes", "Daniel"
+]
+
+DB = "historie.db"
+
+HTML = """
+<!doctype html>
+<html>
+<head>
+    <title>Spieltag Planer</title>
+    <style>
+        body{
+            font-family:Arial;
+            max-width:900px;
+            margin:auto;
+            padding:20px;
+        }
+        .spieler{
+            display:inline-block;
+            width:200px;
+            margin:4px;
+        }
+        .spiel{
+            padding:10px;
+            margin:10px 0;
+            background:#f0f0f0;
+            border-radius:8px;
+        }
+    </style>
+</head>
+<body>
+
+<h1>2 gegen 2 Spieltag-Planer</h1>
+
+<form method="post">
+
+{% for s in spieler %}
+<div class="spieler">
+<label>
+<input type="checkbox" name="anw" value="{{s}}">
+{{s}}
+</label>
+</div>
+{% endfor %}
+
+<br><br>
+
+<button type="submit">
+Spieltag berechnen
+</button>
+
+</form>
+
+{% if spiele %}
+
+<h2>Spiele</h2>
+
+{% for spiel in spiele %}
+<div class="spiel">
+<b>{{loop.index}}.</b>
+{{spiel[0][0]}} + {{spiel[0][1]}}
+gegen
+{{spiel[1][0]}} + {{spiel[1][1]}}
+</div>
+{% endfor %}
+
+<h2>Übrig</h2>
+
+{% if uebrige %}
+<ul>
+{% for s in uebrige %}
+<li>{{s}}</li>
+{% endfor %}
+</ul>
+{% else %}
+<p>Keine</p>
+{% endif %}
+
+{% endif %}
+
+</body>
+</html>
+"""
+
+
+def init_db():
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS paare(
+        a TEXT,
+        b TEXT,
+        team INTEGER DEFAULT 0,
+        gegner INTEGER DEFAULT 0,
+        UNIQUE(a,b)
+    )
+    """)
+
+    conn.commit()
+    conn.close()
+
+
+def hole_werte(a, b):
+
+    a, b = sorted([a, b])
+
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+
+    c.execute(
+        "SELECT team, gegner FROM paare WHERE a=? AND b=?",
+        (a, b)
+    )
+
+    r = c.fetchone()
+
+    conn.close()
+
+    if r:
+        return r
+
+    return (0, 0)
+
+
+def speichern(a, b, typ):
+
+    a, b = sorted([a, b])
+
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+
+    c.execute(
+        "INSERT OR IGNORE INTO paare(a,b,team,gegner) VALUES(?,?,0,0)",
+        (a, b)
+    )
+
+    if typ == "team":
+        c.execute(
+            "UPDATE paare SET team=team+1 WHERE a=? AND b=?",
+            (a, b)
+        )
+    else:
+        c.execute(
+            "UPDATE paare SET gegner=gegner+1 WHERE a=? AND b=?",
+            (a, b)
+        )
+
+    conn.commit()
+    conn.close()
+
+
+def kosten(team1, team2):
+
+    wert = 0
+
+    for p in combinations(team1, 2):
+        wert += hole_werte(*p)[0] * 10
+
+    for p in combinations(team2, 2):
+        wert += hole_werte(*p)[0] * 10
+
+    for a in team1:
+        for b in team2:
+            wert += hole_werte(a, b)[1]
+
+    return wert
+
+
+def spieltag_berechnen(anwesend):
+
+    anwesend = list(anwesend)
+
+    spiele = []
+
+    while len(anwesend) >= 4:
+
+        beste_kosten = 999999
+        beste_losung = None
+
+        for vierer in combinations(anwesend, 4):
+
+            a, b, c, d = vierer
+
+            varianten = [
+                ((a, b), (c, d)),
+                ((a, c), (b, d)),
+                ((a, d), (b, c))
+            ]
+
+            for team1, team2 in varianten:
+
+                k = kosten(team1, team2)
+
+                if k < beste_kosten:
+                    beste_kosten = k
+                    beste_losung = (vierer, team1, team2)
+
+        vierer, team1, team2 = beste_losung
+
+        spiele.append((team1, team2))
+
+        for p in combinations(team1, 2):
+            speichern(*p, "team")
+
+        for p in combinations(team2, 2):
+            speichern(*p, "team")
+
+        for a in team1:
+            for b in team2:
+                speichern(a, b, "gegner")
+
+        for s in vierer:
+            anwesend.remove(s)
+
+    return spiele, anwesend
+
+
+@app.route("/", methods=["GET", "POST"])
+def start():
+
+    spiele = None
+    uebrige = []
+
+    if request.method == "POST":
+
+        anwesend = request.form.getlist("anw")
+
+        spiele, uebrige = spieltag_berechnen(anwesend)
+
+    return render_template_string(
+        HTML,
+        spieler=SPIELER,
+        spiele=spiele,
+        uebrige=uebrige
+    )
+
+
+if __name__ == "__main__":
+    init_db()
+    app.run(debug=True)
